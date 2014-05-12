@@ -1,14 +1,6 @@
 <?php // For help, invoke as $ php apply.php --help
 
 /**
- * This parameter is the path where all the patches that should be part of the database are
- * found.  All files with names matching *.sql in that directory will be considered as patches;
- * which ones need to be applied, and in what order, will be computed automatically, taking the
- * current state of the database into account.
- */
-$patch_directory_path = __DIR__ . "/../../sql/active";
-
-/**
  * This parameter should be FALSE for normal usage; TRUE for debugging this script itself by
  * creating a database from scratch.  It may also have other uses.  When the parameter is TRUE,
  * the script connects first to the postgres database and issues an appropriate CREATE DATABASE
@@ -92,8 +84,9 @@ if($mode == 'help')
 }
 
 
-$database_config = include __DIR__ . "/../../application/config/database.php";
+$database_config = include $database_config_path;
 
+// Get list of patches already applied
 if(!$create_database) {
     $pdo_name = $database_config['default']['connection']['dsn'];
     $pdo_name .= ";user=" . $database_config['default']['connection']['username'];
@@ -127,6 +120,7 @@ if(!$create_database) {
     echo "Starting from an empty database.\n";
 }
 
+// Get list of patches in patch directory
 $directory_path = $patch_directory_path;
 $directory = opendir($directory_path);
 $available_migrations = array();
@@ -150,8 +144,9 @@ if(!count($available_migrations)) {
     exit(0);
 }
 
+// Get & Sort dependencies list
 $script_pipes = array();
-$script = proc_open(__DIR__ . "/versioning/tools/list-dependencies-from-patches.sh " . implode(' ', $available_migrations), array(array("pipe", "r"), array("pipe", "w"), STDOUT), $script_pipes);
+$script = proc_open(__DIR__ . "/tools/list-dependencies-from-patches.sh " . implode(' ', $available_migrations), array(array("pipe", "r"), array("pipe", "w"), STDOUT), $script_pipes);
 $tsort_pipes = array();
 $tsort = proc_open("tsort", array($script_pipes[1], array("pipe", "w"), STDOUT), $tsort_pipes);
 fclose($script_pipes[0]);
@@ -168,6 +163,7 @@ foreach($sorted_migrations as $migration) {
 }
 $sorted_migrations = $temporary;
 
+// Setup DB Params
 $hostname = NULL;
 $port = NULL;
 $database_name = NULL;
@@ -201,6 +197,7 @@ if(array_key_exists('password', $database_config['default']['connection']))
     $password = $database_config['default']['connection']['password'];
 }
 
+// Handle create DB
 if($succeeded) {
     if($create_database) {
         echo "Creating database " . $database_name . ".\n";
@@ -219,13 +216,14 @@ if($succeeded) {
 }
 
 if($succeeded) {
+    // Install versioning if we just created a DB
     if($create_database) {
         $psql_pipes = array();
         $psql = proc_open("psql -w --host=" . $hostname . " --port=" . $port . " --username=" . $user . " " . $database_name, array(array("pipe", "r"), array("pipe", "w"), array("pipe", "w")), $psql_pipes, NULL, array('PGPASSWORD' => $password));
     
         echo "Installing versioning schema into newly-created database.\n";
     
-        $sql = file_get_contents(__DIR__ . "/versioning/install.versioning.sql");
+        $sql = file_get_contents(__DIR__ . "/install.versioning.sql");
         fwrite($psql_pipes[0], $sql . "\n");
         fflush($psql_pipes[0]);
         
@@ -264,16 +262,20 @@ if($succeeded) {
     }
 
     
-    // Actually apply migrations! Yay!
+    // Apply migrations
     if($succeeded) {
         echo "Will apply " . count($sorted_migrations) . " patches.\n";
 
-        // for each migration in our sorted list of migrations to apply
+        // For each migration in our sorted list of migrations to apply
         foreach($sorted_migrations as $migration) {
+            
+            // Start new DB process
             $psql_pipes = array();
             $psql = proc_open("psql -w --host=" . $hostname . " --port=" . $port . " --username=" . $user . " " . $database_name, array(array("pipe", "r"), array("pipe", "w"), array("pipe", "w")), $psql_pipes, NULL, array('PGPASSWORD' => $password));
     
             echo("\nApplying " . $migration . "...\n");
+            
+            // Read in migration
             if(!is_file($patch_directory_path . "/" . $migration . ".sql")) {
                 echo "File does not exist.\n";
                 echo "FAILED\n";
@@ -281,6 +283,8 @@ if($succeeded) {
                 continue;
             }
             $sql = file_get_contents($patch_directory_path . "/" . $migration . ".sql");
+            
+            // Wrap content in transaction & pipe into STDIN
             fwrite($psql_pipes[0], "BEGIN;\n");
             fwrite($psql_pipes[0], $sql . "\n");
             if($rollback)
@@ -293,6 +297,7 @@ if($succeeded) {
             }
             fflush($psql_pipes[0]);
     
+            // Read process output, handle errors
             while(TRUE) {
                 $read_pipes = array($psql_pipes[1]);
                 $write_pipes = array();
@@ -357,4 +362,15 @@ if($create_database && $drop_database) {
     fclose($psql_pipes[1]);
     
     proc_close($psql);
+}
+
+if($succeeded)
+{
+    //Return success status code
+    exit(0);
+} 
+else
+{
+    // Return fail status code
+    exit(1);
 }
