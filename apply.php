@@ -25,31 +25,35 @@ $database_name = NULL;
 $user = NULL;
 $password = NULL;
 
-$conninfo_string = $database_config['default']['connection']['dsn'];
-
-$matches = array();
-if(preg_match("/host=([^ ;]+)/", $conninfo_string, $matches)) $hostname = $matches[1];
-
-$matches = array();
-if(preg_match("/port=([^ ;]+)/", $conninfo_string, $matches)) $port = $matches[1];
-
-$matches = array();
-if(preg_match("/dbname=([^ ;]+)/", $conninfo_string, $matches)) $database_name = $matches[1];
-
-$matches = array();
-if(preg_match("/user=([^ ;]+)/", $conninfo_string, $matches)) $user = $matches[1];
-
-$matches = array();
-if(preg_match("/password=([^ ;]+)/", $conninfo_string, $matches)) $password = $matches[1];
-
-if(array_key_exists('username', $database_config['default']['connection']))
+$database_config = include $database_config_path;
+if(is_array($database_config))
 {
-    $user = $database_config['default']['connection']['username'];
-}
+    $conninfo_string = $database_config['default']['connection']['dsn'];
 
-if(array_key_exists('password', $database_config['default']['connection']))
-{
-    $password = $database_config['default']['connection']['password'];
+    $matches = array();
+    if(preg_match("/host=([^ ;]+)/", $conninfo_string, $matches)) $hostname = $matches[1];
+
+    $matches = array();
+    if(preg_match("/port=([^ ;]+)/", $conninfo_string, $matches)) $port = $matches[1];
+
+    $matches = array();
+    if(preg_match("/dbname=([^ ;]+)/", $conninfo_string, $matches)) $database_name = $matches[1];
+
+    $matches = array();
+    if(preg_match("/user=([^ ;]+)/", $conninfo_string, $matches)) $user = $matches[1];
+
+    $matches = array();
+    if(preg_match("/password=([^ ;]+)/", $conninfo_string, $matches)) $password = $matches[1];
+
+    if(array_key_exists('username', $database_config['default']['connection']))
+    {
+        $user = $database_config['default']['connection']['username'];
+    }
+
+    if(array_key_exists('password', $database_config['default']['connection']))
+    {
+        $password = $database_config['default']['connection']['password'];
+    }
 }
 
 // More, unlabelled "options"
@@ -78,7 +82,7 @@ while($num_options > 0)
     {
         $rollback = TRUE;
     }
-    else if($option = "--commit")
+    else if($option == "--commit")
     {
         $rollback = FALSE;
     }
@@ -120,6 +124,7 @@ while($num_options > 0)
         echo "Unknown option " . $option . "\n";
         $succeeded = FALSE;
     }
+    $num_options--;
 }
 
 if(!$succeeded)
@@ -151,7 +156,6 @@ if($mode == 'help')
 }
 
 
-$database_config = include $database_config_path;
 
 // Get list of patches already applied
 if(!$create_database) {
