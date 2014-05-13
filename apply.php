@@ -1,0 +1,415 @@
+<?php // For help, invoke as $ php apply.php --help
+
+/**
+ * This parameter should be FALSE for normal usage; TRUE for debugging this script itself by
+ * creating a database from scratch.  It may also have other uses.  When the parameter is TRUE,
+ * the script connects first to the postgres database and issues an appropriate CREATE DATABASE
+ * command, then reconnects to the new one.
+ */
+$create_database = FALSE;
+
+/**
+ * This parameter should be FALSE for normal usage; TRUE for debugging this script itself by
+ * dropping the entire database (!!!) after applying patches to it.  It has no effect unless
+ * $create_database is also TRUE.
+ */
+$drop_database = FALSE;
+
+/*********************************************************************************************/
+
+
+// Setup DB Params
+$hostname = NULL;
+$port = NULL;
+$database_name = NULL;
+$user = NULL;
+$password = NULL;
+
+$database_config = include $database_config_path;
+if(is_array($database_config))
+{
+    $conninfo_string = $database_config['default']['connection']['dsn'];
+
+    $matches = array();
+    if(preg_match("/host=([^ ;]+)/", $conninfo_string, $matches)) $hostname = $matches[1];
+
+    $matches = array();
+    if(preg_match("/port=([^ ;]+)/", $conninfo_string, $matches)) $port = $matches[1];
+
+    $matches = array();
+    if(preg_match("/dbname=([^ ;]+)/", $conninfo_string, $matches)) $database_name = $matches[1];
+
+    $matches = array();
+    if(preg_match("/user=([^ ;]+)/", $conninfo_string, $matches)) $user = $matches[1];
+
+    $matches = array();
+    if(preg_match("/password=([^ ;]+)/", $conninfo_string, $matches)) $password = $matches[1];
+
+    if(array_key_exists('username', $database_config['default']['connection']))
+    {
+        $user = $database_config['default']['connection']['username'];
+    }
+
+    if(array_key_exists('password', $database_config['default']['connection']))
+    {
+        $password = $database_config['default']['connection']['password'];
+    }
+}
+
+// More, unlabelled "options"
+$verbose = FALSE;
+$rollback = FALSE;
+$mode = 'apply';
+
+
+$succeeded = TRUE; // Setup pass/fail boolean
+
+// Parse CLI params
+$script_file = array_shift($argv);
+$num_options = count($argv);
+while($num_options > 0)
+{
+    $option = array_shift($argv);
+    if($option == "--verbose")
+    {
+        $verbose = TRUE;
+    }
+    else if($option == "--terse")
+    {
+        $verbose = FALSE;
+    }
+    else if($option == "--rollback")
+    {
+        $rollback = TRUE;
+    }
+    else if($option == "--commit")
+    {
+        $rollback = FALSE;
+    }
+    else if($option == "--apply")
+    {
+        $mode = 'apply';
+    }
+    else if($option == "--help")
+    {
+        $mode = 'help';
+    }
+    else if($option == "--host")
+    {
+        $hostname = array_shift($argv);
+        $num_options--;
+    }
+    else if($option == "--port")
+    {
+        $port = array_shift($argv);
+        $num_options--;
+    }
+    else if($option == "--dbname")
+    {
+        $database_name = array_shift($argv);
+        $num_options--;
+    }
+    else if($option == "--user")
+    {
+        $user = array_shift($argv);
+        $num_options--;
+    }
+    else if($option == "--pass")
+    {
+        $password = array_shift($argv);
+        $num_options--;
+    }
+    else
+    {
+        echo "Unknown option " . $option . "\n";
+        $succeeded = FALSE;
+    }
+    $num_options--;
+}
+
+if(!$succeeded)
+{
+    echo "No actions performed.\n";
+    exit(1);
+}
+
+if($mode == 'help')
+{
+    echo "\n";
+    echo "Usage: php " . $script_file . " [option...]\n";
+    echo "\n";
+    echo "If a database option is not provided over CLI, the setting will be obtained from the kohana config.\n";
+    echo "\n";
+    echo "--help                This message.\n";
+    echo "--apply               Normal mode (default).\n";
+    echo "--verbose             Show success messages as well as errors.\n";
+    echo "--terse               Show only error messages (default).\n";
+    echo "--rollback	        Rollback after applying any patches.\n";
+    echo "--commit	            Commit after applying any patches (default).\n";
+    echo "--host 123.45.67.89	The hostname or IP for the database server.\n";
+    echo "--port 1234	        The port for the database server.\n";
+    echo "--dbname name	        The name of the database to apply patches to.\n";
+    echo "--user user	        The user to run DB options as.\n";
+    echo "--pass p@ss	        The password to run db options as.\n";
+    echo "\n";
+    exit(0);
+}
+
+
+
+// Get list of patches already applied
+if(!$create_database) {
+    $pdo_name = 'pgsql:host='.$hostname;
+    $pdo_name .= ";port=" . $port;
+    $pdo_name .= ";dbname=" . $database_name;
+    $pdo_name .= ";user=" . $user;
+    $pdo_name .= ";password=" . $password;
+    $pgsql = new PDO($pdo_name);
+
+    if(!($pgsql instanceof PDO))
+    {
+        echo "Cannot connect to database at \"" . $pdo_name . "\".\n";
+        exit(1);
+    }
+    
+    $query = $pgsql->query("SELECT patch_name FROM _v.patches");
+    if($query)
+    {
+        $results = $query->fetchAll();
+    }
+    else
+    {
+        $results = array();
+    }
+    $active_patches = array();
+    foreach($results as $result) {
+        $active_patches[] = $result['patch_name'];
+    }
+    
+    echo "Currently active patches are: " . implode(' ', $active_patches) . "\n";
+} else {
+    $active_patches = array();
+    
+    echo "Starting from an empty database.\n";
+}
+
+// Get list of patches in patch directory
+$directory_path = $patch_directory_path;
+$directory = opendir($directory_path);
+$available_migrations = array();
+while($entry = readdir($directory)) {
+    if(in_array($entry, array(".", ".."))) continue;
+    
+    if(!is_file($directory_path . "/" . $entry)) continue;
+    
+    $matches = array();
+    if(!preg_match("/^([0-9]{4}-.*)\\.sql$/", $entry, $matches)) continue;
+    
+    if(in_array($matches[1], $active_patches)) continue;
+    
+    $available_migrations[] = $directory_path . "/" . $entry;
+}
+closedir($directory);
+sort($available_migrations, SORT_STRING);
+
+if(!count($available_migrations)) {
+    echo "Already current.\n";
+    exit(0);
+}
+
+// Get & Sort dependencies list
+$script_pipes = array();
+$script = proc_open(__DIR__ . "/tools/list-dependencies-from-patches.sh " . implode(' ', $available_migrations), array(array("pipe", "r"), array("pipe", "w"), STDOUT), $script_pipes);
+$tsort_pipes = array();
+$tsort = proc_open("tsort", array($script_pipes[1], array("pipe", "w"), STDOUT), $tsort_pipes);
+fclose($script_pipes[0]);
+$sorted_migrations = array_diff(array_reverse(explode("\n", stream_get_contents($tsort_pipes[1]))), $active_patches);
+fclose($script_pipes[1]);
+fclose($tsort_pipes[1]);
+proc_close($script);
+proc_close($tsort);
+
+$temporary = array();
+foreach($sorted_migrations as $migration) {
+    if($migration == "") continue;
+    $temporary[] = $migration;
+}
+$sorted_migrations = $temporary;
+
+// Handle create DB
+if($succeeded) {
+    if($create_database) {
+        echo "Creating database " . $database_name . ".\n";
+    
+        $psql_pipes = array();
+        $psql = proc_open("psql -w --host=" . $hostname . " --port=" . $port . " --username=" . $user . " postgres", array(array("pipe", "r"), array("pipe", "w"), STDOUT), $psql_pipes, NULL, array('PGPASSWORD' => $password));
+    
+        fwrite($psql_pipes[0], "CREATE DATABASE " . $database_name . ";\n");
+        fflush($psql_pipes[0]);
+    
+        fclose($psql_pipes[0]);
+        fclose($psql_pipes[1]);
+    
+        proc_close($psql);
+    }
+}
+
+if($succeeded) {
+    // Install versioning if we just created a DB
+    if($create_database) {
+        $psql_pipes = array();
+        $psql = proc_open("psql -w --host=" . $hostname . " --port=" . $port . " --username=" . $user . " " . $database_name, array(array("pipe", "r"), array("pipe", "w"), array("pipe", "w")), $psql_pipes, NULL, array('PGPASSWORD' => $password));
+    
+        echo "Installing versioning schema into newly-created database.\n";
+    
+        $sql = file_get_contents(__DIR__ . "/install.versioning.sql");
+        fwrite($psql_pipes[0], $sql . "\n");
+        fflush($psql_pipes[0]);
+        
+        while(TRUE) {
+            $read_pipes = array($psql_pipes[1]);
+            $write_pipes = array();
+            $exception_pipes = array();
+            stream_select($read_pipes, $write_pipes, $exception_pipes, 0);
+            $line = fgets($psql_pipes[1]);
+            if($line == "COMMIT\n") break;
+            if($line == "ROLLBACK\n") {
+                echo "FAILED\n";
+                $succeeded = FALSE;
+                break;
+            }
+        }
+        
+        $errors = "";
+        while(TRUE) {
+            $read_pipes = array($psql_pipes[2]);
+            $write_pipes = array();
+            $exception_pipes = array();
+            stream_select($read_pipes, $write_pipes, $exception_pipes, 0);
+            if(!count($read_pipes)) break;
+            $line = fgets($psql_pipes[2]);
+            if($line == "ERROR:  current transaction is aborted, commands ignored until end of transaction block\n") continue;
+            if(preg_match("/^ERROR:  /", $line)) $errors .= $line;
+        }
+        
+        echo $errors;
+        
+        fclose($psql_pipes[0]);
+        fclose($psql_pipes[1]);
+
+        proc_close($psql);
+    }
+
+    
+    // Apply migrations
+    if($succeeded) {
+        echo "Will apply " . count($sorted_migrations) . " patches.\n";
+
+        // For each migration in our sorted list of migrations to apply
+        foreach($sorted_migrations as $migration) {
+            
+            // Start new DB process
+            $psql_pipes = array();
+            $psql = proc_open("psql -w --host=" . $hostname . " --port=" . $port . " --username=" . $user . " " . $database_name, array(array("pipe", "r"), array("pipe", "w"), array("pipe", "w")), $psql_pipes, NULL, array('PGPASSWORD' => $password));
+    
+            echo("\nApplying " . $migration . "...\n");
+            
+            // Read in migration
+            if(!is_file($patch_directory_path . "/" . $migration . ".sql")) {
+                echo "File does not exist.\n";
+                echo "FAILED\n";
+                $succeeded = FALSE;
+                continue;
+            }
+            $sql = file_get_contents($patch_directory_path . "/" . $migration . ".sql");
+            
+            // Wrap content in transaction & pipe into STDIN
+            fwrite($psql_pipes[0], "BEGIN;\n");
+            fwrite($psql_pipes[0], $sql . "\n");
+            if($rollback)
+            {
+                fwrite($psql_pipes[0], "ROLLBACK;\n");
+            }
+            else
+            {
+                fwrite($psql_pipes[0], "COMMIT;\n");
+            }
+            fflush($psql_pipes[0]);
+    
+            // Read process output, handle errors
+            while(TRUE) {
+                $read_pipes = array($psql_pipes[1]);
+                $write_pipes = array();
+                $exception_pipes = array();
+                stream_select($read_pipes, $write_pipes, $exception_pipes, 0);
+                $line = fgets($psql_pipes[1]);
+            
+                if($line == "COMMIT\n") break;
+                if($line == "ROLLBACK\n") {
+                    if($rollback)
+                    {
+                        echo "ROLLED BACK\n";
+                    }
+                    else
+                    {
+                        echo "FAILED\n";
+                    }
+                    $succeeded = FALSE;
+                    break;
+                }
+                if($verbose) {
+                    echo $line;
+                }
+            }
+            
+            $errors = "";
+            while(TRUE) {
+                $read_pipes = array($psql_pipes[2]);
+                $write_pipes = array();
+                $exception_pipes = array();
+                stream_select($read_pipes, $write_pipes, $exception_pipes, 0);
+                if(!count($read_pipes)) break;
+                $line = fgets($psql_pipes[2]);
+                if($line == "ERROR:  current transaction is aborted, commands ignored until end of transaction block\n") continue;
+                if(preg_match("/^ERROR:  /", $line)) $errors .= $line;
+            }
+            
+            echo $errors;
+            
+            fclose($psql_pipes[0]);
+            fclose($psql_pipes[1]);
+
+            proc_close($psql);
+        }
+    }
+}
+
+if($succeeded) {
+    echo "\nDone with migrations.\n";
+}
+
+if($create_database && $drop_database) {
+    echo "Dropping database " . $database_name . ".\n";
+    
+    $psql_pipes = array();
+    $psql = proc_open("psql -w --host=" . $hostname . " --port=" . $port . " --username=" . $user . " postgres", array(array("pipe", "r"), array("pipe", "w"), STDOUT), $psql_pipes, NULL, array('PGPASSWORD' => $password));
+    
+    fwrite($psql_pipes[0], "DROP DATABASE " . $database_name . ";\n");
+    fflush($psql_pipes[0]);
+    
+    fclose($psql_pipes[0]);
+    fclose($psql_pipes[1]);
+    
+    proc_close($psql);
+}
+
+if($succeeded)
+{
+    //Return success status code
+    exit(0);
+} 
+else
+{
+    // Return fail status code
+    exit(1);
+}

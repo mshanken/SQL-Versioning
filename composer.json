@@ -1,0 +1,7 @@
+{
+    "name": "mshanken/sql-versioning",
+    "description": "SQL migration tool for mshanken projects",
+    "require": {
+        "php": ">=5.3.0"
+    }
+}
