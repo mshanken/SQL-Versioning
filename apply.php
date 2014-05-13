@@ -18,6 +18,40 @@ $drop_database = FALSE;
 /*********************************************************************************************/
 
 
+// Setup DB Params
+$hostname = NULL;
+$port = NULL;
+$database_name = NULL;
+$user = NULL;
+$password = NULL;
+
+$conninfo_string = $database_config['default']['connection']['dsn'];
+
+$matches = array();
+if(preg_match("/host=([^ ;]+)/", $conninfo_string, $matches)) $hostname = $matches[1];
+
+$matches = array();
+if(preg_match("/port=([^ ;]+)/", $conninfo_string, $matches)) $port = $matches[1];
+
+$matches = array();
+if(preg_match("/dbname=([^ ;]+)/", $conninfo_string, $matches)) $database_name = $matches[1];
+
+$matches = array();
+if(preg_match("/user=([^ ;]+)/", $conninfo_string, $matches)) $user = $matches[1];
+
+$matches = array();
+if(preg_match("/password=([^ ;]+)/", $conninfo_string, $matches)) $password = $matches[1];
+
+if(array_key_exists('username', $database_config['default']['connection']))
+{
+    $user = $database_config['default']['connection']['username'];
+}
+
+if(array_key_exists('password', $database_config['default']['connection']))
+{
+    $password = $database_config['default']['connection']['password'];
+}
+
 // More, unlabelled "options"
 $verbose = FALSE;
 $rollback = FALSE;
@@ -28,7 +62,8 @@ $succeeded = TRUE; // Setup pass/fail boolean
 
 // Parse CLI params
 $script_file = array_shift($argv);
-while(count($argv) > 0)
+$num_options = count($argv);
+while($num_options > 0)
 {
     $option = array_shift($argv);
     if($option == "--verbose")
@@ -55,6 +90,31 @@ while(count($argv) > 0)
     {
         $mode = 'help';
     }
+    else if($option == "--host")
+    {
+        $hostname = array_shift($argv);
+        $num_options--;
+    }
+    else if($option == "--port")
+    {
+        $port = array_shift($argv);
+        $num_options--;
+    }
+    else if($option == "--dbname")
+    {
+        $database_name = array_shift($argv);
+        $num_options--;
+    }
+    else if($option == "--user")
+    {
+        $user = array_shift($argv);
+        $num_options--;
+    }
+    else if($option == "--pass")
+    {
+        $password = array_shift($argv);
+        $num_options--;
+    }
     else
     {
         echo "Unknown option " . $option . "\n";
@@ -62,7 +122,7 @@ while(count($argv) > 0)
     }
 }
 
-if(!$succeeded) // Because throwing an error where the error actually happened would be hard?
+if(!$succeeded)
 {
     echo "No actions performed.\n";
     exit(1);
@@ -73,12 +133,19 @@ if($mode == 'help')
     echo "\n";
     echo "Usage: php " . $script_file . " [option...]\n";
     echo "\n";
+    echo "If a database option is not provided over CLI, the setting will be obtained from the kohana config.\n";
+    echo "\n";
     echo "--help                This message.\n";
     echo "--apply               Normal mode (default).\n";
     echo "--verbose             Show success messages as well as errors.\n";
     echo "--terse               Show only error messages (default).\n";
     echo "--rollback	        Rollback after applying any patches.\n";
-    echo "--commit	        Commit after applying any patches (default).\n";
+    echo "--commit	            Commit after applying any patches (default).\n";
+    echo "--host 123.45.67.89	The hostname or IP for the database server.\n";
+    echo "--port 1234	        The port for the database server.\n";
+    echo "--dbname name	        The name of the database to apply patches to.\n";
+    echo "--user user	        The user to run DB options as.\n";
+    echo "--pass p@ss	        The password to run db options as.\n";
     echo "\n";
     exit(0);
 }
@@ -88,9 +155,11 @@ $database_config = include $database_config_path;
 
 // Get list of patches already applied
 if(!$create_database) {
-    $pdo_name = $database_config['default']['connection']['dsn'];
-    $pdo_name .= ";user=" . $database_config['default']['connection']['username'];
-    $pdo_name .= ";password=" . $database_config['default']['connection']['password'];
+    $pdo_name = 'pgsql:host='.$hostname;
+    $pdo_name .= ";port=" . $port;
+    $pdo_name .= ";dbname=" . $database_name;
+    $pdo_name .= ";user=" . $user;
+    $pdo_name .= ";password=" . $password;
     $pgsql = new PDO($pdo_name);
 
     if(!($pgsql instanceof PDO))
@@ -162,40 +231,6 @@ foreach($sorted_migrations as $migration) {
     $temporary[] = $migration;
 }
 $sorted_migrations = $temporary;
-
-// Setup DB Params
-$hostname = NULL;
-$port = NULL;
-$database_name = NULL;
-$user = NULL;
-$password = NULL;
-
-$conninfo_string = $database_config['default']['connection']['dsn'];
-
-$matches = array();
-if(preg_match("/host=([^ ;]+)/", $conninfo_string, $matches)) $hostname = $matches[1];
-
-$matches = array();
-if(preg_match("/port=([^ ;]+)/", $conninfo_string, $matches)) $port = $matches[1];
-
-$matches = array();
-if(preg_match("/dbname=([^ ;]+)/", $conninfo_string, $matches)) $database_name = $matches[1];
-
-$matches = array();
-if(preg_match("/user=([^ ;]+)/", $conninfo_string, $matches)) $user = $matches[1];
-
-$matches = array();
-if(preg_match("/password=([^ ;]+)/", $conninfo_string, $matches)) $password = $matches[1];
-
-if(array_key_exists('username', $database_config['default']['connection']))
-{
-    $user = $database_config['default']['connection']['username'];
-}
-
-if(array_key_exists('password', $database_config['default']['connection']))
-{
-    $password = $database_config['default']['connection']['password'];
-}
 
 // Handle create DB
 if($succeeded) {
