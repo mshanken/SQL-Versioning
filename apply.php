@@ -310,8 +310,23 @@ if($succeeded) {
             
             // Start new DB process
             $psql_pipes = array();
-            $psql = proc_open("psql -w --host=" . $hostname . " --port=" . $port . " --username=" . $user . " " . $database_name, array(array("pipe", "r"), array("pipe", "w"), array("pipe", "w")), $psql_pipes, NULL, array('PGPASSWORD' => $password));
-    
+            $psql = proc_open(
+                "psql -w --host=" . $hostname . " --port=" . $port . " --username=" . $user . " " . $database_name, 
+                array(array("pipe", "r"), array("pipe", "w"), array("pipe", "w")),
+                $psql_pipes, 
+                NULL, 
+                array('PGPASSWORD' => $password)
+            );
+            
+            // Handle connection errors
+            sleep(1); // Sleep so the proc has time to err out
+            if(!proc_get_status($psql)['running']) 
+            {
+                $error = stream_get_contents($psql_pipes[2]);
+                proc_close($psql);
+                die(sprintf("Failed running psql with error: %s\n", $error));
+            }
+            
             echo("\nApplying " . $migration . "...\n");
             
             // Read in migration
@@ -343,7 +358,7 @@ if($succeeded) {
                 $exception_pipes = array();
                 stream_select($read_pipes, $write_pipes, $exception_pipes, 0);
                 $line = fgets($psql_pipes[1]);
-            
+                
                 if($line == "COMMIT\n") break;
                 if($line == "ROLLBACK\n") {
                     if($rollback)
